@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="lf" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1e1f29"/>
+      <stop offset="100%" stop-color="#282A36"/>
+    </linearGradient>
+    <linearGradient id="rf" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#31334a"/>
+      <stop offset="100%" stop-color="#1e1f29"/>
+    </linearGradient>
+    <linearGradient id="tf" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#44475A"/>
+      <stop offset="100%" stop-color="#5a5d7a"/>
+    </linearGradient>
+    <linearGradient id="le" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF79C6"/>
+      <stop offset="40%" stop-color="#BD93F9"/>
+      <stop offset="100%" stop-color="#13141c" stop-opacity="0.1"/>
+    </linearGradient>
+    <linearGradient id="tel" x1="1" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#ff92df"/>
+      <stop offset="100%" stop-color="#FF79C6"/>
+    </linearGradient>
+    <linearGradient id="ter" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#BD93F9"/>
+      <stop offset="100%" stop-color="#44475A" stop-opacity="0.3"/>
+    </linearGradient>
+    <linearGradient id="wm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#BD93F9"/>
+      <stop offset="50%" stop-color="#FF79C6"/>
+      <stop offset="100%" stop-color="#BD93F9"/>
+    </linearGradient>
+    <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF79C6" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#FF79C6" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="bggrd" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#BD93F9" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#BD93F9" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#BD93F9" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Deep background -->
+  <rect x="0" y="0" width="400" height="400" rx="36" fill="#13141c"/>
+  <!-- Subtle border -->
+  <rect x="1" y="1" width="398" height="398" rx="35" fill="none" stroke="#2e3040" stroke-width="1"/>
+
+  <!-- Ambient glow behind base -->
+  <ellipse cx="200" cy="330" rx="88" ry="9" fill="url(#bggrd)"/>
+
+  <!-- Apex atmospheric bleed -->
+  <ellipse cx="200" cy="105" rx="58" ry="92" fill="url(#ag)" opacity="0.6"/>
+
+  <!-- Left face -->
+  <polygon points="112,330 148,88 200,68 200,330" fill="url(#lf)"/>
+  <!-- Right face -->
+  <polygon points="200,68 252,88 288,330 200,330" fill="url(#rf)"/>
+  <!-- Top face -->
+  <polygon points="148,88 200,44 252,88 200,68" fill="url(#tf)"/>
+
+  <!-- Color wash on faces -->
+  <polygon points="112,330 148,88 200,68 200,330" fill="#FF79C6" opacity="0.04"/>
+  <polygon points="200,68 252,88 288,330 200,330" fill="#BD93F9" opacity="0.07"/>
+
+  <!-- Left outer edge -->
+  <line x1="112" y1="330" x2="148" y2="88" stroke="url(#le)" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Top-left edge — hero highlight -->
+  <line x1="148" y1="88" x2="200" y2="44" stroke="url(#tel)" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Top-right edge -->
+  <line x1="200" y1="44" x2="252" y2="88" stroke="url(#ter)" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Right outer edge -->
+  <line x1="252" y1="88" x2="288" y2="330" stroke="#44475A" stroke-width="1" stroke-linecap="round" stroke-opacity="0.5"/>
+  <!-- Center ridge -->
+  <line x1="200" y1="68" x2="200" y2="330" stroke="#BD93F9" stroke-width="0.8" stroke-opacity="0.14"/>
+  <!-- Base line -->
+  <line x1="112" y1="330" x2="288" y2="330" stroke="#6272A4" stroke-width="0.8" stroke-opacity="0.5"/>
+
+  <!-- Apex glow rings -->
+  <circle cx="200" cy="44" r="8" fill="#FF79C6" opacity="0.16"/>
+  <circle cx="200" cy="44" r="4.5" fill="#ff92df" opacity="0.45"/>
+  <circle cx="200" cy="44" r="2.2" fill="#ffcce9" opacity="0.88"/>
+  <circle cx="200" cy="44" r="0.9" fill="#ffffff" opacity="1"/>
+
+  <!-- Wordmark — larger, tighter letter-spacing to fit -->
+  <text
+    x="200"
+    y="374"
+    font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+    font-size="20"
+    font-weight="300"
+    letter-spacing="7"
+    fill="url(#wm)"
+    text-anchor="middle"
+  >MONOLITH</text>
+</svg>

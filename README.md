@@ -1,4 +1,13 @@
-# Monolith
+<p align="center">
+  <img src="assets/monolith-logo.svg" width="160" alt="Monolith" />
+</p>
+
+<h1 align="center">Monolith</h1>
+
+<p align="center">
+  <a href="..."><img src="https://img.shields.io/badge/license-MIT-BD93F9?style=flat-square" /></a>
+  <a href="..."><img src="https://img.shields.io/github/stars/you/monolith?style=flat-square&color=FF79C6" /></a>
+</p>
 
 > "Remember — it all depends on who uses it, how they use it, and to what purpose."
 > — Yennefer of Vengerberg, *Blood of Elves*
