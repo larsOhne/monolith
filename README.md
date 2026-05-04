@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/monolith-logo.svg" width="160" alt="Monolith" />
+  <img src="assets/logo.svg" width="160" alt="Monolith" />
 </p>
 
 <h1 align="center">Monolith</h1>
