@@ -1,8 +1,7 @@
 <p align="center">
-  <img src="assets/logo.svg" width="160" alt="Monolith" />
+  <img src="assets/logo.svg" width="320" alt="Monolith" />
 </p>
 
-<h1 align="center">Monolith</h1>
 
 <p align="center">
   <a href="..."><img src="https://img.shields.io/badge/license-MIT-BD93F9?style=flat-square" /></a>
