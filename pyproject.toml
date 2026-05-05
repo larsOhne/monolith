@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "monolith"
+version = "0.1.0"
+description = "Personal knowledge system where every claim traces to verbatim, version-locked evidence"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.2",
+    "gitpython>=3.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "graphifyy>=0.6",
+    "mcp>=1.0",
+    "pydantic>=2.9",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+monolith = "monolith.cli:main"
+monolith-mcp = "monolith.mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["monolith"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

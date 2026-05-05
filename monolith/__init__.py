@@ -1,0 +1,1 @@
+"""Monolith — personal knowledge system."""
