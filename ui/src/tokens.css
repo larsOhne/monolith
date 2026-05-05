@@ -1,0 +1,43 @@
+/* ============================================
+   MONOLITH — Color Tokens
+   Based on the Dracula color palette
+   ============================================ */
+
+:root {
+
+  /* Background & Surface
+     Use these for layering UI depth */
+  --color-canvas:      #13141C;  /* deepest background, page base */
+  --color-bg:          #282A36;  /* default component background  */
+  --color-surface:     #44475A;  /* cards, panels, inputs         */
+  --color-muted:       #6272A4;  /* borders, placeholders, icons  */
+  --color-fg:          #F8F8F2;  /* primary text                  */
+
+  /* Accents */
+  --color-pink:        #FF79C6;  /* primary brand, highlights     */
+  --color-purple:      #BD93F9;  /* secondary brand, links        */
+  --color-cyan:        #8BE9FD;  /* properties, info accents      */
+  --color-green:       #50FA7B;  /* success, instances            */
+  --color-yellow:      #F1FA8C;  /* literals, warnings            */
+  --color-orange:      #FFB86C;  /* concepts, caution             */
+
+  /* Semantic */
+  --color-error:       #FF79C6;  /* errors, danger states         */
+  --color-warning:     #FFB86C;  /* warnings, caution states      */
+  --color-success:     #50FA7B;  /* success, confirmation         */
+  --color-info:        #8BE9FD;  /* info, neutral feedback        */
+
+  /* Gradients */
+  --gradient-brand:    linear-gradient(90deg, #BD93F9, #FF79C6, #BD93F9);
+  --gradient-canvas:   linear-gradient(180deg, #13141C, #282A36);
+
+  /* Graph node roles (for KG visualization) */
+  --color-node-instance:   #50FA7B;  /* concrete entities    */
+  --color-node-type:       #BD93F9;  /* classes / types      */
+  --color-node-property:   #8BE9FD;  /* property labels      */
+  --color-node-concept:    #FFB86C;  /* concept / skill nodes*/
+  --color-node-literal:    #F1FA8C;  /* string / date values */
+  --color-edge-relation:   #FF79C6;  /* relation edges       */
+  --color-edge-attribute:  #6272A4;  /* attribute edges      */
+
+}
