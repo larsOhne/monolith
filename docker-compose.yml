@@ -1,0 +1,40 @@
+services:
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the DuckDB file and project source git repos across restarts
+      - monolith_data:/data
+      # Mount source for live reload (--reload flag in CMD)
+      - ./monolith:/app/monolith
+    environment:
+      MONOLITH_ROOT: /data
+      MONOLITH_DB: /data/monolith.ddb
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/projects')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    ports:
+      - "5173:5173"
+    volumes:
+      # Mount source for hot-module replacement
+      - ./ui:/app
+      - /app/node_modules  # keep container node_modules isolated
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  monolith_data:
