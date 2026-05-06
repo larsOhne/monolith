@@ -32,6 +32,7 @@ dev = [
 [project.scripts]
 monolith = "monolith.cli:main"
 monolith-mcp = "monolith.mcp.server:main"
+monolith-server = "monolith.server.run:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["monolith"]
