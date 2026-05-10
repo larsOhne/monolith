@@ -2,28 +2,22 @@
 name = "monolith-desktop"
 version = "0.1.0"
 edition = "2021"
-description = "Monolith native desktop application"
+description = "Monolith – Obsidian-like markdown vault editor"
 
 [[bin]]
 name = "monolith-desktop"
 path = "src/main.rs"
 
 [dependencies]
-eframe       = { version = "0.31", features = ["default_fonts", "wgpu", "persistence"] }
-egui         = "0.31"
-egui_extras  = { version = "0.31", features = ["all_loaders"] }
-petgraph     = "0.6"
-reqwest      = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
-serde        = { version = "1", features = ["derive"] }
-serde_json   = "1"
-tokio        = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-rfd          = "0.15"
-thiserror    = "2"
-tracing      = "0.1"
+eframe          = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence", "x11", "wayland", "accesskit"] }
+egui            = "0.34"
+egui_extras     = { version = "0.34", features = ["all_loaders"] }
+egui_commonmark = { version = "0.23", features = ["better_syntax_highlighting"] }
+notify          = { version = "8", features = ["serde"] }
+serde           = { version = "1", features = ["derive"] }
+serde_json      = "1"
+tracing         = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[target.'cfg(unix)'.dependencies]
-libc         = "0.2"
 
 [profile.release]
 strip = true

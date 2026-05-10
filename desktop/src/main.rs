@@ -1,7 +1,5 @@
-mod api;
 mod app;
-mod views;
-mod worker;
+mod vault;
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
@@ -14,7 +12,7 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Monolith")
-            .with_inner_size([1200.0, 800.0])
+            .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([800.0, 600.0]),
         ..Default::default()
     };
