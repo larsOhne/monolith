@@ -2,31 +2,76 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from monolith.mcp import tools as T
-from monolith.server.deps import get_db
+from monolith.core import ingest as ingest_mod
 from monolith.store.db import DB
+from monolith.server.deps import get_db, get_vault_root
 from monolith.store import fs
 
 router = APIRouter()
 
 
 class AddSourceBody(BaseModel):
-    project_slug: str
     file_path: str | None = None
     url: str | None = None
 
 
+def _source_dict(source, copied_bytes: int = 0) -> dict:
+    return {
+        "id": source.id,
+        "path": source.path,
+        "url": source.url,
+        "sha256": source.sha256,
+        "ingested_at": source.ingested_at.isoformat(),
+        "copied_bytes": copied_bytes,
+    }
+
+
 @router.post("", status_code=201)
-def add_source(body: AddSourceBody, db: DB = Depends(get_db)):
+def add_source(
+    body: AddSourceBody,
+    vault_root: Path = Depends(get_vault_root),
+    db: DB = Depends(get_db),
+):
+    # Deduplication: check if a source with same hash already exists
     try:
-        return T.add_source(db, body.project_slug, file_path=body.file_path, url=body.url)
-    except ValueError as exc:
+        result = ingest_mod.ingest(
+            vault_root,
+            file_path=body.file_path,
+            url=body.url,
+        )
+    except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Check for existing source with same hash before inserting
+    existing = db.get_source_by_sha256(result.source.sha256)
+    if existing is not None:
+        return _source_dict(existing)
+
+    db.upsert_source(result.source)
+    return _source_dict(result.source, result.copied_bytes)
+
+
+@router.get("/{source_id}/content")
+def get_source_content(
+    source_id: str,
+    vault_root: Path = Depends(get_vault_root),
+    db: DB = Depends(get_db),
+):
+    source = db.get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    try:
+        text = fs.read_source_text(vault_root, source.path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"content": text}
 
 
 @router.get("/{source_id}")
@@ -34,47 +79,9 @@ def get_source(source_id: str, db: DB = Depends(get_db)):
     source = db.get_source(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    return {
-        "id": source.id,
-        "project_id": source.project_id,
-        "path": source.path,
-        "url": source.url,
-        "sha256": source.sha256,
-        "git_sha": source.git_sha,
-        "ingested_at": source.ingested_at.isoformat(),
-    }
-
-
-@router.get("/{source_id}/content")
-def get_source_content(source_id: str, db: DB = Depends(get_db)):
-    """Return the current on-disk text of a source file."""
-    source = db.get_source(source_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="Source not found")
-    project = db.get_project(source.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        text = fs.read_current_text(project.slug, source.path)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"content": text}
+    return _source_dict(source)
 
 
 @router.get("")
-def list_sources(project_slug: str, db: DB = Depends(get_db)):
-    project = db.get_project_by_slug(project_slug)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    sources = db.list_sources(project.id)
-    return [
-        {
-            "id": s.id,
-            "path": s.path,
-            "url": s.url,
-            "sha256": s.sha256,
-            "git_sha": s.git_sha,
-            "ingested_at": s.ingested_at.isoformat(),
-        }
-        for s in sources
-    ]
+def list_sources(db: DB = Depends(get_db)):
+    return [_source_dict(s) for s in db.list_sources()]

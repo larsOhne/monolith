@@ -1,9 +1,10 @@
 """Entry point for the Monolith FastAPI server.
 
-Supports ``--port 0`` for OS-assigned port assignment.  When the env var
-``MONOLITH_READY_FD`` is set the actual bound port is written to that file
-descriptor as ``port=<N>\\n`` so the parent process (the desktop app) can
-connect without polling.
+Supports ``--port 0`` for OS-assigned port. When ``MONOLITH_READY_FD`` is set
+the actual bound port is written to that fd as ``port=<N>\\n`` so the Rust
+desktop app can connect without polling.
+
+On startup the server scans the vault and rebuilds the DuckDB cache.
 """
 
 from __future__ import annotations
@@ -13,22 +14,15 @@ import logging
 import os
 import signal
 import socket
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 
 logger = logging.getLogger(__name__)
 
-_shutdown = False
-
-
-def _handle_sigterm(signum: int, frame: object) -> None:  # noqa: ARG001
-    global _shutdown  # noqa: PLW0603
-    _shutdown = True
-    raise SystemExit(0)
-
 
 def _write_ready(fd: int, port: int) -> None:
-    """Write port to the ready file descriptor and close it."""
     try:
         os.write(fd, f"port={port}\n".encode())
         os.close(fd)
@@ -37,10 +31,31 @@ def _write_ready(fd: int, port: int) -> None:
 
 
 def _find_free_port() -> int:
-    """Bind to port 0 and return the OS-assigned port number."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _build_lifespan(ready_fd: int, port: int):
+    @asynccontextmanager
+    async def lifespan(application):  # noqa: ARG001
+        # Rebuild the vault cache synchronously before accepting requests
+        from monolith.server.deps import get_vault_root, get_db
+        from monolith.store import fs
+
+        vault_root = get_vault_root()
+        fs.ensure_vault_structure(vault_root)
+        db = get_db()
+        logger.info("Rebuilding cache from vault: %s", vault_root)
+        db.rebuild_from_vault(vault_root)
+        logger.info("Vault cache ready.")
+
+        if ready_fd:
+            _write_ready(ready_fd, port)
+
+        yield  # server runs here
+
+    return lifespan
 
 
 def main() -> None:
@@ -50,7 +65,7 @@ def main() -> None:
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit(0)))
 
     port = args.port
     if port == 0:
@@ -58,23 +73,8 @@ def main() -> None:
 
     ready_fd = int(os.environ.get("MONOLITH_READY_FD", "0"))
 
-    # Write port *before* uvicorn starts so the parent can connect as soon as
-    # the server is ready (uvicorn's startup hook fires after bind).
-    # We use a uvicorn lifespan event to write it at the right moment.
-    if ready_fd:
-        import asyncio
-        from contextlib import asynccontextmanager
-
-        from fastapi import FastAPI
-
-        @asynccontextmanager
-        async def lifespan(application: FastAPI):  # noqa: ARG001
-            _write_ready(ready_fd, port)
-            yield
-
-        # Patch the app's lifespan *only* when running as a worker
-        from monolith.server.main import app
-        app.router.lifespan_context = lifespan  # type: ignore[assignment]
+    from monolith.server.main import app
+    app.router.lifespan_context = _build_lifespan(ready_fd, port)
 
     uvicorn.run(
         "monolith.server.main:app",

@@ -1,85 +1,99 @@
-"""drift() — fourth pipeline stage.
+"""drift() — vault-first drift detection.
 
-For every Evidence record in a project, compare the source content at
-*git_sha_at_pin* against the current HEAD of the sources repo. Classify
-each piece of evidence as:
+Reads Reference notes from .monolith/refs/, checks each against its source,
+classifies as valid / drifted / broken.
 
-- valid   — the verbatim passage is present unchanged at the same position
-- drifted — the passage still exists in the file but at a different position
-            (the source was edited around it)
-- broken  — the passage no longer appears in the file at all
-
-The DB is updated in place and a DriftReport is returned.
+- valid   — verbatim text still present in source unchanged
+- drifted — anchor phrase found but exact verbatim text differs (source edited around it)
+- broken  — anchor not found at all
 """
 
 from __future__ import annotations
 
-from monolith.models import DriftEntry, DriftReport, EvidenceStatus, Project
-from monolith.store.db import DB
+from pathlib import Path
+
+from monolith.models import DriftEntry, DriftReport, Reference, ReferenceStatus
+from monolith.core.vault import scan_references
 from monolith.store import fs
 
 
-def check_drift(project: Project, db: DB) -> DriftReport:
-    """Scan all evidence in *project* and update statuses. Returns a DriftReport."""
-    sources = db.list_sources(project.id)
+def check_drift(vault_root: Path) -> DriftReport:
+    """Scan all reference notes in vault and classify for drift."""
+    references = scan_references(vault_root)
     report = DriftReport()
 
-    for source in sources:
-        evidence_list = db.list_evidence_for_source(source.id)
-        if not evidence_list:
+    for ref in references:
+        source_abs = vault_root / ref.source_path
+        if not source_abs.exists():
+            report.entries.append(
+                DriftEntry(
+                    reference_id=ref.id,
+                    source_path=ref.source_path,
+                    status=ReferenceStatus.broken,
+                    diff_snippet="Source file no longer exists in vault.",
+                )
+            )
             continue
 
-        head_sha = fs.current_head_sha(project.slug)
-        current_text = fs.read_current_text(project.slug, source.path)
+        current_hash = "sha256:" + fs.sha256_file(source_abs)
+        if current_hash == ref.source_hash:
+            # Source file unchanged — reference is still valid
+            continue
 
-        for ev in evidence_list:
-            if ev.git_sha_at_pin == head_sha:
-                # Source has not changed since pin — still valid
-                continue
-
-            new_status = _classify(ev.verbatim_text, current_text)
-
-            if new_status != ev.status:
-                db.update_evidence_status(ev.id, new_status)
-
-            if new_status != EvidenceStatus.valid:
-                diff = fs.get_diff_between(project.slug, ev.git_sha_at_pin, head_sha, source.path)
-                report.entries.append(
-                    DriftEntry(
-                        evidence_id=ev.id,
-                        source_id=source.id,
-                        old_git_sha=ev.git_sha_at_pin,
-                        new_git_sha=head_sha,
-                        status=new_status,
-                        diff_snippet=_truncate_diff(diff),
-                    )
+        try:
+            current_text = source_abs.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            report.entries.append(
+                DriftEntry(
+                    reference_id=ref.id,
+                    source_path=ref.source_path,
+                    status=ReferenceStatus.broken,
+                    diff_snippet=f"Could not read source: {exc}",
                 )
+            )
+            continue
+
+        new_status = _classify(ref, current_text)
+        if new_status != ReferenceStatus.valid:
+            snippet = _context_snippet(ref, current_text)
+            report.entries.append(
+                DriftEntry(
+                    reference_id=ref.id,
+                    source_path=ref.source_path,
+                    status=new_status,
+                    diff_snippet=snippet,
+                )
+            )
 
     return report
 
 
-# ------------------------------------------------------------------
-# Internal helpers
-# ------------------------------------------------------------------
-
-def _classify(verbatim: str, current_text: str) -> EvidenceStatus:
-    """Determine evidence status by searching *verbatim* in *current_text*."""
-    if verbatim in current_text:
-        return EvidenceStatus.valid
-    # Try a relaxed match: strip leading/trailing whitespace from each line
-    stripped_verbatim = _normalize(verbatim)
-    stripped_current = _normalize(current_text)
-    if stripped_verbatim in stripped_current:
-        return EvidenceStatus.drifted
-    return EvidenceStatus.broken
+def _classify(ref: Reference, current_text: str) -> ReferenceStatus:
+    if ref.verbatim_text and ref.verbatim_text in current_text:
+        return ReferenceStatus.valid
+    if ref.anchor and ref.anchor in current_text:
+        return ReferenceStatus.drifted
+    return ReferenceStatus.broken
 
 
-def _normalize(text: str) -> str:
-    return "\n".join(line.strip() for line in text.splitlines())
+def _context_snippet(ref: Reference, current_text: str) -> str:
+    """Return a few lines of context around where the anchor was expected."""
+    anchor = ref.anchor or (ref.verbatim_text or "")[:80]
+    if not anchor:
+        return "(no anchor; cannot locate passage)"
 
+    idx = current_text.find(anchor)
+    if idx == -1:
+        stored_preview = (ref.verbatim_text or anchor)[:200]
+        return f"Was:\n{stored_preview!r}\n\n(not found in current source)"
 
-def _truncate_diff(diff: str, max_lines: int = 30) -> str:
-    lines = diff.splitlines()
-    if len(lines) <= max_lines:
-        return diff
-    return "\n".join(lines[:max_lines]) + f"\n… ({len(lines) - max_lines} more lines)"
+    # Context around where anchor IS found (to show what changed nearby)
+    line_start = max(0, current_text.rfind("\n", 0, idx) + 1)
+    end_search = idx + len(anchor) + 200
+    line_end = current_text.find("\n", idx + len(anchor), end_search)
+    if line_end == -1:
+        line_end = min(len(current_text), end_search)
+
+    context = current_text[line_start:line_end]
+    stored = (ref.verbatim_text or "")[:200]
+    return f"Was:\n{stored!r}\n\nCurrent context:\n{context!r}"

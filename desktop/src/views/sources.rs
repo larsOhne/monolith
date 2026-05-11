@@ -18,6 +18,8 @@ pub struct SourcesView {
     loading: bool,
     error: Option<String>,
     rx: Option<mpsc::Receiver<Msg>>,
+    url_input: String,
+    url_input_open: bool,
 }
 
 impl SourcesView {
@@ -45,6 +47,20 @@ impl SourcesView {
         let s = slug.to_string();
         std::thread::spawn(move || {
             match c.ingest_source(&s, &path) {
+                Ok(src) => { let _ = tx.send(Msg::Ingested(src)); }
+                Err(e) => { let _ = tx.send(Msg::Error(e.to_string())); }
+            }
+        });
+    }
+
+    fn ingest_url(&mut self, client: &Client, slug: &str, url: String) {
+        let (tx, rx) = mpsc::channel::<Msg>();
+        self.rx = Some(rx);
+        self.loading = true;
+        let c = client.clone();
+        let s = slug.to_string();
+        std::thread::spawn(move || {
+            match c.ingest_source_url(&s, &url) {
                 Ok(src) => { let _ = tx.send(Msg::Ingested(src)); }
                 Err(e) => { let _ = tx.send(Msg::Error(e.to_string())); }
             }
@@ -79,6 +95,10 @@ impl SourcesView {
                         self.ingest_file(client, slug, p.to_string_lossy().into_owned());
                     }
                 }
+                if ui.button(egui::RichText::new("+ Add URL").color(palette::ACCENT)).clicked() {
+                    self.url_input_open = !self.url_input_open;
+                    self.url_input.clear();
+                }
                 if ui.button(egui::RichText::new("↻ Refresh").color(palette::MUTED)).clicked() {
                     self.fetch(client, slug);
                 }
@@ -88,6 +108,44 @@ impl SourcesView {
             });
         });
         ui.separator();
+
+        // Inline URL ingestion form
+        if self.url_input_open {
+            let mut ingest_url: Option<String> = None;
+            egui::Frame::new()
+                .fill(palette::SURFACE)
+                .stroke(egui::Stroke::new(1.0, palette::ACCENT))
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("URL:").color(palette::MUTED).size(13.0));
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.url_input)
+                                .hint_text("https://example.com/paper.pdf")
+                                .desired_width(ui.available_width() - 120.0)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                        resp.request_focus();
+                        let can_submit = !self.url_input.trim().is_empty();
+                        if (ui.add_enabled(can_submit, egui::Button::new("Ingest")).clicked()
+                            || (can_submit && ui.input(|i| i.key_pressed(egui::Key::Enter))))
+                            && !self.loading
+                        {
+                            ingest_url = Some(self.url_input.trim().to_string());
+                        }
+                        if ui.button("✕").clicked() {
+                            self.url_input_open = false;
+                            self.url_input.clear();
+                        }
+                    });
+                });
+            if let Some(url) = ingest_url {
+                self.url_input_open = false;
+                self.url_input.clear();
+                self.ingest_url(client, slug, url);
+            }
+            ui.add_space(8.0);
+        }
 
         if let Some(ref e) = self.error.clone() {
             ui.label(egui::RichText::new(e).color(palette::RED));

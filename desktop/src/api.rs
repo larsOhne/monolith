@@ -161,7 +161,15 @@ impl Client {
         use std::collections::HashMap;
         let mut body = HashMap::new();
         body.insert("project_slug", project_slug);
-        body.insert("path", path);
+        body.insert("file_path", path);
+        Self::check(self.inner.post(self.url("/api/sources")).json(&body).send()?)
+    }
+
+    pub fn ingest_source_url(&self, project_slug: &str, url: &str) -> ApiResult<Source> {
+        use std::collections::HashMap;
+        let _ = project_slug; // vault-first: no project scope on new API
+        let mut body = HashMap::new();
+        body.insert("url", url);
         Self::check(self.inner.post(self.url("/api/sources")).json(&body).send()?)
     }
 

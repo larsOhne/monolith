@@ -57,6 +57,14 @@ struct OpenVaultDialog {
     error: Option<String>,
 }
 
+#[derive(Default)]
+struct QuickSwitcherState {
+    open: bool,
+    query: String,
+    results: Vec<PathBuf>,
+    selected_idx: usize,
+}
+
 // ─── App ────────────────────────────────────────────────────────────────────
 
 pub struct MonolithApp {
@@ -81,6 +89,7 @@ pub struct MonolithApp {
     search_query: String,
     search_results: Vec<PathBuf>,
     search_mode: bool,
+    quick_switcher: QuickSwitcherState,
 }
 
 impl MonolithApp {
@@ -105,6 +114,7 @@ impl MonolithApp {
             search_query: String::new(),
             search_results: Vec::new(),
             search_mode: false,
+            quick_switcher: QuickSwitcherState::default(),
         }
     }
 
@@ -253,6 +263,212 @@ impl MonolithApp {
             for entry in &tree_snapshot {
                 walk(entry, &query, &mut self.search_results);
             }
+        }
+    }
+
+    // ── Wikilinks ────────────────────────────────────────────────────────────
+
+    /// Extract `[[target]]` or `[[target|display]]` link targets from a block.
+    fn extract_wikilinks(text: &str) -> Vec<String> {
+        let mut links = Vec::new();
+        let mut remaining = text;
+        while let Some(start) = remaining.find("[[") {
+            let rest = &remaining[start + 2..];
+            if let Some(end) = rest.find("]]") {
+                let inner = &rest[..end];
+                // Strip display alias: [[target|alias]] → target
+                let target = inner.split('|').next().unwrap_or(inner);
+                // Strip heading/block ref: [[target#section]] → target
+                let target = target.split('#').next().unwrap_or(target).trim();
+                if !target.is_empty() {
+                    links.push(target.to_string());
+                }
+                remaining = &rest[end + 2..];
+            } else {
+                break;
+            }
+        }
+        links
+    }
+
+    /// Replace `[[...]]` with bold text for CommonMarkViewer rendering.
+    fn render_wikilinks_as_bold(text: &str) -> String {
+        let mut result = String::new();
+        let mut remaining = text;
+        while let Some(start) = remaining.find("[[") {
+            result.push_str(&remaining[..start]);
+            let rest = &remaining[start + 2..];
+            if let Some(end) = rest.find("]]") {
+                let inner = &rest[..end];
+                let display = inner.split('|').last().unwrap_or(inner);
+                let display = display.split('#').next().unwrap_or(display).trim();
+                result.push_str("**");
+                result.push_str(display);
+                result.push_str("**");
+                remaining = &rest[end + 2..];
+            } else {
+                result.push_str("[[");
+                remaining = &remaining[start + 2..];
+            }
+        }
+        result.push_str(remaining);
+        result
+    }
+
+    /// Resolve a wikilink target to a vault file path.
+    fn resolve_wikilink(&self, target: &str) -> Option<PathBuf> {
+        let vault = self.vault.as_ref()?;
+        let target_lower = target.to_lowercase();
+        let target_lower = target_lower.trim_end_matches(".md");
+
+        fn walk(
+            entries: &[crate::vault::VaultEntry],
+            target: &str,
+        ) -> Option<PathBuf> {
+            for entry in entries {
+                if entry.is_dir {
+                    if let Some(p) = walk(&entry.children, target) {
+                        return Some(p);
+                    }
+                } else {
+                    let name = entry.name.to_lowercase();
+                    let name = name
+                        .trim_end_matches(".md")
+                        .trim_end_matches(".txt");
+                    if name == target {
+                        return Some(entry.path.clone());
+                    }
+                }
+            }
+            None
+        }
+
+        walk(&vault.tree, target_lower)
+    }
+
+    // ── Quick Switcher ───────────────────────────────────────────────────────
+
+    fn update_quick_switcher(&mut self) {
+        self.quick_switcher.results.clear();
+        self.quick_switcher.selected_idx = 0;
+        let query = self.quick_switcher.query.to_lowercase();
+        if let Some(ref vault) = self.vault {
+            fn collect(entries: &[crate::vault::VaultEntry], query: &str, out: &mut Vec<PathBuf>) {
+                for entry in entries {
+                    if entry.is_dir {
+                        collect(&entry.children, query, out);
+                    } else if entry.name.ends_with(".md") || entry.name.ends_with(".txt") {
+                        if query.is_empty() || entry.name.to_lowercase().contains(query) {
+                            out.push(entry.path.clone());
+                            if out.len() >= 20 {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            collect(&vault.tree, &query, &mut self.quick_switcher.results);
+        }
+    }
+
+    fn show_quick_switcher(&mut self, ctx: &egui::Context) {
+        if !self.quick_switcher.open {
+            return;
+        }
+
+        // Close on Escape
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.quick_switcher.open = false;
+            self.quick_switcher.query.clear();
+            return;
+        }
+
+        // Arrow key navigation
+        let n = self.quick_switcher.results.len();
+        if n > 0 {
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                self.quick_switcher.selected_idx =
+                    (self.quick_switcher.selected_idx + 1).min(n - 1);
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                self.quick_switcher.selected_idx =
+                    self.quick_switcher.selected_idx.saturating_sub(1);
+            }
+        }
+
+        let mut open_path: Option<PathBuf> = None;
+
+        // Enter opens selected
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if let Some(path) = self.quick_switcher.results.get(self.quick_switcher.selected_idx) {
+                open_path = Some(path.clone());
+            }
+        }
+
+        egui::Window::new("Quick Switcher")
+            .collapsible(false)
+            .resizable(false)
+            .min_width(480.0)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
+            .title_bar(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(palette::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, palette::ACCENT))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::same(12)),
+            )
+            .show(ctx, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.quick_switcher.query)
+                        .hint_text("Open note… (Ctrl+O)")
+                        .desired_width(f32::INFINITY)
+                        .font(egui::TextStyle::Body),
+                );
+                if resp.changed() {
+                    self.update_quick_switcher();
+                }
+                resp.request_focus();
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                let results = self.quick_switcher.results.clone();
+                let selected = self.quick_switcher.selected_idx;
+                for (i, path) in results.iter().enumerate() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let display = name
+                        .trim_end_matches(".md")
+                        .trim_end_matches(".txt");
+                    let is_sel = i == selected;
+                    let color = if is_sel { palette::ACCENT_HOVER } else { palette::FG };
+                    let bg = if is_sel { palette::ACTIVE_FILE } else { egui::Color32::TRANSPARENT };
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(display).color(color).size(14.0))
+                                .frame(is_sel)
+                                .fill(bg)
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .clicked()
+                    {
+                        open_path = Some(path.clone());
+                    }
+                }
+
+                if results.is_empty() && !self.quick_switcher.query.is_empty() {
+                    ui.label(egui::RichText::new("No notes found").color(palette::MUTED).size(13.0));
+                }
+            });
+
+        if let Some(path) = open_path {
+            self.quick_switcher.open = false;
+            self.quick_switcher.query.clear();
+            self.open_file(path);
         }
     }
 
@@ -737,6 +953,7 @@ impl MonolithApp {
         let mut clicked_block: Option<usize> = None;
         let mut should_deactivate = false;
         let mut content_changed = false;
+        let mut pending_wikilink: Option<PathBuf> = None;
 
         egui::ScrollArea::vertical()
             .id_salt("live_scroll")
@@ -778,13 +995,53 @@ impl MonolithApp {
                                 let top_y = ui.cursor().min.y;
                                 let block_content = &blocks[i];
 
+                                // Extract wikilinks before rendering
+                                let wikilinks = Self::extract_wikilinks(block_content);
+                                let rendered_content = if wikilinks.is_empty() {
+                                    block_content.clone()
+                                } else {
+                                    Self::render_wikilinks_as_bold(block_content)
+                                };
+
                                 ui.push_id(("bv", i), |ui| {
                                     if block_content.trim().is_empty() {
                                         // Invisible spacer so empty paragraphs are clickable
                                         ui.add_space(20.0);
                                     } else {
                                         CommonMarkViewer::new()
-                                            .show(ui, &mut self.md_cache, block_content.as_str());
+                                            .show(ui, &mut self.md_cache, rendered_content.as_str());
+                                    }
+
+                                    // Render wikilink navigation chips below the block
+                                    if !wikilinks.is_empty() {
+                                        ui.add_space(2.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            for target in &wikilinks {
+                                                let label = format!("↗ {target}");
+                                                let exists = self.resolve_wikilink(target).is_some();
+                                                let color = if exists { palette::ACCENT } else { palette::MUTED };
+                                                let btn = ui.add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new(&label).color(color).size(11.0),
+                                                    )
+                                                    .frame(true)
+                                                    .fill(palette::SURFACE),
+                                                );
+                                                if btn.clicked() {
+                                                    if let Some(path) = self.resolve_wikilink(target) {
+                                                        pending_wikilink = Some(path);
+                                                    }
+                                                }
+                                                if btn.hovered() {
+                                                    egui::show_tooltip_text(
+                                                        ui.ctx(),
+                                                        ui.layer_id(),
+                                                        egui::Id::new(("wl_tt", i, target.as_str())),
+                                                        target,
+                                                    );
+                                                }
+                                            }
+                                        });
                                     }
                                 });
 
@@ -835,6 +1092,11 @@ impl MonolithApp {
             self.active_block = None;
         } else if let Some(idx) = clicked_block {
             self.active_block = Some(idx);
+        }
+
+        // Wikilink navigation: open queued file
+        if let Some(path) = pending_wikilink {
+            self.open_file(path);
         }
     }
 
@@ -1112,6 +1374,12 @@ impl eframe::App for MonolithApp {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.search_mode = !self.search_mode;
         }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::O)) {
+            self.quick_switcher.open = !self.quick_switcher.open;
+            if self.quick_switcher.open {
+                self.update_quick_switcher();
+            }
+        }
 
         self.render_title_bar(&ctx);
         self.render_status_bar(&ctx);
@@ -1131,6 +1399,7 @@ impl eframe::App for MonolithApp {
         self.show_rename_dialog(&ctx);
         self.show_delete_dialog(&ctx);
         self.show_open_vault_dialog(&ctx);
+        self.show_quick_switcher(&ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

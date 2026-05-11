@@ -1,65 +1,56 @@
-"""DuckDB store — schema, migrations, query helpers."""
+"""DuckDB cache — vault-first schema, query helpers, and rebuild logic.
+
+The DB is a derived cache populated by scanning the vault. Discard it at any
+time; it will be rebuilt from <vault>/.monolith/refs/ and the vault markdown
+files on next startup.
+"""
 
 from __future__ import annotations
 
-import os
+import json
 from datetime import datetime
 from pathlib import Path
 
 import duckdb
-from datetime import datetime
 
 from monolith.models import (
-    Evidence,
-    EvidenceStatus,
-    Project,
+    Reference,
+    ReferenceStatus,
+    Relation,
     Source,
-    Statement,
 )
-
-_DEFAULT_DB = Path(os.environ.get("MONOLITH_DB", Path.home() / ".monolith" / "monolith.ddb"))
 
 
 def _schema() -> str:
     return """
-    CREATE TABLE IF NOT EXISTS projects (
-        id          TEXT PRIMARY KEY,
-        name        TEXT NOT NULL,
-        slug        TEXT NOT NULL UNIQUE,
-        description TEXT NOT NULL DEFAULT ''
-    );
-
     CREATE TABLE IF NOT EXISTS sources (
         id           TEXT PRIMARY KEY,
-        project_id   TEXT NOT NULL REFERENCES projects(id),
-        path         TEXT NOT NULL,
+        path         TEXT NOT NULL UNIQUE,
         url          TEXT,
         sha256       TEXT NOT NULL,
-        git_sha      TEXT NOT NULL,
         ingested_at  TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS evidence (
-        id              TEXT PRIMARY KEY,
-        source_id       TEXT NOT NULL REFERENCES sources(id),
-        verbatim_text   TEXT NOT NULL,
-        char_start      INTEGER NOT NULL,
-        char_end        INTEGER NOT NULL,
-        git_sha_at_pin  TEXT NOT NULL,
-        status          TEXT NOT NULL DEFAULT 'valid'
+    CREATE TABLE IF NOT EXISTS refs (
+        id            TEXT PRIMARY KEY,
+        note_path     TEXT NOT NULL,
+        source_path   TEXT NOT NULL,
+        source_hash   TEXT NOT NULL,
+        verbatim_text TEXT,
+        anchor        TEXT,
+        span_hash     TEXT,
+        polygon       TEXT,
+        marked_at     TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'valid'
     );
 
-    CREATE TABLE IF NOT EXISTS statements (
-        id         TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id),
-        content    TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS statement_evidence (
-        statement_id TEXT NOT NULL REFERENCES statements(id),
-        evidence_id  TEXT NOT NULL REFERENCES evidence(id),
-        PRIMARY KEY (statement_id, evidence_id)
+    CREATE TABLE IF NOT EXISTS relations (
+        id        TEXT PRIMARY KEY,
+        note_path TEXT NOT NULL,
+        kind      TEXT NOT NULL,
+        source    TEXT NOT NULL,
+        target    TEXT NOT NULL,
+        metadata  TEXT NOT NULL DEFAULT '{}'
     );
     """
 
@@ -68,7 +59,7 @@ class DB:
     """Thin wrapper around a DuckDB connection."""
 
     def __init__(self, path: Path | None = None) -> None:
-        db_path = path or _DEFAULT_DB
+        db_path = path or Path.home() / ".monolith" / "monolith.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(str(db_path))
         self._conn.execute(_schema())
@@ -83,230 +74,192 @@ class DB:
         self.close()
 
     # ------------------------------------------------------------------
-    # Projects
-    # ------------------------------------------------------------------
-
-    def upsert_project(self, project: Project) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO projects (id, name, slug, description)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (id) DO UPDATE SET
-                name = excluded.name,
-                slug = excluded.slug,
-                description = excluded.description
-            """,
-            [project.id, project.name, project.slug, project.description],
-        )
-
-    def get_project(self, project_id: str) -> Project | None:
-        row = self._conn.execute(
-            "SELECT id, name, slug, description FROM projects WHERE id = ?",
-            [project_id],
-        ).fetchone()
-        if row is None:
-            return None
-        return Project(*row)
-
-    def get_project_by_slug(self, slug: str) -> Project | None:
-        row = self._conn.execute(
-            "SELECT id, name, slug, description FROM projects WHERE slug = ?",
-            [slug],
-        ).fetchone()
-        if row is None:
-            return None
-        return Project(*row)
-
-    def list_projects(self) -> list[Project]:
-        rows = self._conn.execute(
-            "SELECT id, name, slug, description FROM projects ORDER BY name"
-        ).fetchall()
-        return [Project(*r) for r in rows]
-
-    # ------------------------------------------------------------------
     # Sources
     # ------------------------------------------------------------------
 
-    def insert_source(self, source: Source) -> None:
+    def upsert_source(self, source: Source) -> None:
         self._conn.execute(
             """
-            INSERT INTO sources (id, project_id, path, url, sha256, git_sha, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sources (id, path, url, sha256, ingested_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                path = excluded.path,
+                url = excluded.url,
+                sha256 = excluded.sha256,
+                ingested_at = excluded.ingested_at
             """,
-            [
-                source.id,
-                source.project_id,
-                source.path,
-                source.url,
-                source.sha256,
-                source.git_sha,
-                source.ingested_at,
-            ],
+            [source.id, source.path, source.url, source.sha256,
+             source.ingested_at.isoformat()],
         )
 
     def get_source(self, source_id: str) -> Source | None:
         row = self._conn.execute(
-            "SELECT id, project_id, path, url, sha256, git_sha, ingested_at FROM sources WHERE id = ?",
+            "SELECT id, path, url, sha256, ingested_at FROM sources WHERE id = ?",
             [source_id],
         ).fetchone()
         if row is None:
             return None
-        id_, project_id, path, url, sha256, git_sha, ingested_at = row
-        return Source(id_, project_id, path, url, sha256, git_sha, datetime.fromisoformat(ingested_at))
+        return Source(row[0], row[1], row[2], row[3], datetime.fromisoformat(row[4]))
 
-    def list_sources(self, project_id: str) -> list[Source]:
-        rows = self._conn.execute(
-            "SELECT id, project_id, path, url, sha256, git_sha, ingested_at FROM sources WHERE project_id = ? ORDER BY path",
-            [project_id],
-        ).fetchall()
-        return [Source(r[0], r[1], r[2], r[3], r[4], r[5], datetime.fromisoformat(r[6])) for r in rows]
-
-    def source_by_sha256(self, project_id: str, sha256: str) -> Source | None:
+    def get_source_by_path(self, path: str) -> Source | None:
         row = self._conn.execute(
-            "SELECT id, project_id, path, url, sha256, git_sha, ingested_at FROM sources WHERE project_id = ? AND sha256 = ?",
-            [project_id, sha256],
+            "SELECT id, path, url, sha256, ingested_at FROM sources WHERE path = ?",
+            [path],
         ).fetchone()
         if row is None:
             return None
-        id_, project_id, path, url, sha256, git_sha, ingested_at = row
-        return Source(id_, project_id, path, url, sha256, git_sha, datetime.fromisoformat(ingested_at))
+        return Source(row[0], row[1], row[2], row[3], datetime.fromisoformat(row[4]))
+
+    def get_source_by_sha256(self, sha256: str) -> Source | None:
+        row = self._conn.execute(
+            "SELECT id, path, url, sha256, ingested_at FROM sources WHERE sha256 = ?",
+            [sha256],
+        ).fetchone()
+        if row is None:
+            return None
+        return Source(row[0], row[1], row[2], row[3], datetime.fromisoformat(row[4]))
+
+    def list_sources(self) -> list[Source]:
+        rows = self._conn.execute(
+            "SELECT id, path, url, sha256, ingested_at FROM sources ORDER BY path"
+        ).fetchall()
+        return [Source(r[0], r[1], r[2], r[3], datetime.fromisoformat(r[4])) for r in rows]
 
     # ------------------------------------------------------------------
-    # Evidence
+    # References
     # ------------------------------------------------------------------
 
-    def insert_evidence(self, ev: Evidence) -> None:
+    def upsert_reference(self, ref: Reference) -> None:
         self._conn.execute(
             """
-            INSERT INTO evidence (id, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO refs (id, note_path, source_path, source_hash, verbatim_text,
+                              anchor, span_hash, polygon, marked_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                note_path     = excluded.note_path,
+                source_path   = excluded.source_path,
+                source_hash   = excluded.source_hash,
+                verbatim_text = excluded.verbatim_text,
+                anchor        = excluded.anchor,
+                span_hash     = excluded.span_hash,
+                polygon       = excluded.polygon,
+                marked_at     = excluded.marked_at,
+                status        = excluded.status
             """,
-            [ev.id, ev.source_id, ev.verbatim_text, ev.char_start, ev.char_end, ev.git_sha_at_pin, ev.status.value],
+            [
+                ref.id,
+                ref.note_path,
+                ref.source_path,
+                ref.source_hash,
+                ref.verbatim_text,
+                ref.anchor,
+                ref.span_hash,
+                json.dumps(ref.polygon) if ref.polygon else None,
+                ref.marked_at,
+                ref.status.value,
+            ],
         )
 
-    def get_evidence(self, evidence_id: str) -> Evidence | None:
+    def get_reference(self, ref_id: str) -> Reference | None:
         row = self._conn.execute(
-            "SELECT id, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, status FROM evidence WHERE id = ?",
-            [evidence_id],
+            "SELECT id, note_path, source_path, source_hash, verbatim_text, anchor, "
+            "span_hash, polygon, marked_at, status FROM refs WHERE id = ?",
+            [ref_id],
         ).fetchone()
         if row is None:
             return None
-        id_, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, status = row
-        return Evidence(id_, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, EvidenceStatus(status))
+        return _row_to_reference(row)
 
-    def list_evidence_for_source(self, source_id: str) -> list[Evidence]:
+    def list_references(self) -> list[Reference]:
         rows = self._conn.execute(
-            "SELECT id, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, status FROM evidence WHERE source_id = ?",
-            [source_id],
+            "SELECT id, note_path, source_path, source_hash, verbatim_text, anchor, "
+            "span_hash, polygon, marked_at, status FROM refs ORDER BY marked_at DESC"
         ).fetchall()
-        return [
-            Evidence(r[0], r[1], r[2], r[3], r[4], r[5], EvidenceStatus(r[6]))
-            for r in rows
-        ]
+        return [_row_to_reference(r) for r in rows]
 
-    def list_all_evidence(self) -> list[Evidence]:
-        rows = self._conn.execute(
-            "SELECT id, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, status FROM evidence"
-        ).fetchall()
-        return [
-            Evidence(r[0], r[1], r[2], r[3], r[4], r[5], EvidenceStatus(r[6]))
-            for r in rows
-        ]
-
-    def update_evidence_status(self, evidence_id: str, status: EvidenceStatus) -> None:
+    def update_reference_status(self, ref_id: str, status: ReferenceStatus) -> None:
         self._conn.execute(
-            "UPDATE evidence SET status = ? WHERE id = ?",
-            [status.value, evidence_id],
+            "UPDATE refs SET status = ? WHERE id = ?",
+            [status.value, ref_id],
         )
 
-    def search_evidence(self, query: str, limit: int = 20) -> list[Evidence]:
+    def search_references(self, query: str, limit: int = 20) -> list[Reference]:
         rows = self._conn.execute(
             """
-            SELECT id, source_id, verbatim_text, char_start, char_end, git_sha_at_pin, status
-            FROM evidence
-            WHERE lower(verbatim_text) LIKE lower(?)
+            SELECT id, note_path, source_path, source_hash, verbatim_text, anchor,
+                   span_hash, polygon, marked_at, status
+            FROM refs
+            WHERE lower(verbatim_text) LIKE lower(?) OR lower(anchor) LIKE lower(?)
             LIMIT ?
             """,
-            [f"%{query}%", limit],
+            [f"%{query}%", f"%{query}%", limit],
+        ).fetchall()
+        return [_row_to_reference(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Relations
+    # ------------------------------------------------------------------
+
+    def upsert_relation(self, rel: Relation) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO relations (id, note_path, kind, source, target, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                note_path = excluded.note_path,
+                kind      = excluded.kind,
+                source    = excluded.source,
+                target    = excluded.target,
+                metadata  = excluded.metadata
+            """,
+            [rel.id, rel.note_path, rel.kind, rel.source, rel.target,
+             json.dumps(rel.metadata)],
+        )
+
+    def list_relations(self) -> list[Relation]:
+        rows = self._conn.execute(
+            "SELECT id, note_path, kind, source, target, metadata FROM relations ORDER BY kind"
         ).fetchall()
         return [
-            Evidence(r[0], r[1], r[2], r[3], r[4], r[5], EvidenceStatus(r[6]))
+            Relation(r[0], r[1], r[2], r[3], r[4], json.loads(r[5]))
             for r in rows
         ]
 
     # ------------------------------------------------------------------
-    # Statements
+    # Rebuild from vault
     # ------------------------------------------------------------------
 
-    def insert_statement(self, stmt: Statement) -> None:
-        self._conn.execute(
-            "INSERT INTO statements (id, project_id, content, created_at) VALUES (?, ?, ?, ?)",
-            [stmt.id, stmt.project_id, stmt.content, stmt.created_at.isoformat()],
-        )
-        for ev_id in stmt.evidence_ids:
-            self._conn.execute(
-                "INSERT INTO statement_evidence (statement_id, evidence_id) VALUES (?, ?)",
-                [stmt.id, ev_id],
-            )
+    def rebuild_from_vault(self, vault_root: Path) -> None:
+        """Repopulate the cache by scanning the vault. Safe to call on startup."""
+        from monolith.core.vault import scan_references, scan_relations
 
-    def get_statement(self, statement_id: str) -> Statement | None:
-        row = self._conn.execute(
-            "SELECT id, project_id, content, created_at FROM statements WHERE id = ?",
-            [statement_id],
-        ).fetchone()
-        if row is None:
-            return None
-        ev_rows = self._conn.execute(
-            "SELECT evidence_id FROM statement_evidence WHERE statement_id = ? ORDER BY rowid",
-            [statement_id],
-        ).fetchall()
-        return Statement(row[0], row[1], row[2], [r[0] for r in ev_rows], datetime.fromisoformat(row[3]))
+        # Truncate and repopulate reference and relation caches
+        self._conn.execute("DELETE FROM refs")
+        self._conn.execute("DELETE FROM relations")
 
-    def list_statements(self, project_id: str) -> list[Statement]:
-        rows = self._conn.execute(
-            "SELECT id, project_id, content, created_at FROM statements WHERE project_id = ? ORDER BY created_at DESC",
-            [project_id],
-        ).fetchall()
-        result = []
-        for row in rows:
-            ev_rows = self._conn.execute(
-                "SELECT evidence_id FROM statement_evidence WHERE statement_id = ? ORDER BY rowid",
-                [row[0]],
-            ).fetchall()
-            result.append(Statement(row[0], row[1], row[2], [r[0] for r in ev_rows], datetime.fromisoformat(row[3])))
-        return result
+        for ref in scan_references(vault_root):
+            self.upsert_reference(ref)
 
-    # ------------------------------------------------------------------
-    # Provenance
-    # ------------------------------------------------------------------
+        for rel in scan_relations(vault_root):
+            self.upsert_relation(rel)
 
-    def get_provenance_chain(self, statement_id: str) -> dict:
-        """Return the full statement → evidence → source chain as a plain dict."""
-        stmt = self.get_statement(statement_id)
-        if stmt is None:
-            return {}
-        chain: dict = {
-            "statement": {"id": stmt.id, "content": stmt.content, "created_at": stmt.created_at.isoformat()},
-            "evidence": [],
-        }
-        for ev_id in stmt.evidence_ids:
-            ev = self.get_evidence(ev_id)
-            if ev is None:
-                continue
-            src = self.get_source(ev.source_id)
-            chain["evidence"].append({
-                "id": ev.id,
-                "verbatim_text": ev.verbatim_text,
-                "char_start": ev.char_start,
-                "char_end": ev.char_end,
-                "git_sha_at_pin": ev.git_sha_at_pin,
-                "status": ev.status.value,
-                "source": {
-                    "id": src.id if src else None,
-                    "path": src.path if src else None,
-                    "url": src.url if src else None,
-                    "sha256": src.sha256 if src else None,
-                    "git_sha": src.git_sha if src else None,
-                },
-            })
-        return chain
+
+# ------------------------------------------------------------------
+# Row helpers
+# ------------------------------------------------------------------
+
+
+def _row_to_reference(row: tuple) -> Reference:
+    id_, note_path, source_path, source_hash, verbatim_text, anchor, span_hash, polygon, marked_at, status = row
+    return Reference(
+        id=id_,
+        note_path=note_path,
+        source_path=source_path,
+        source_hash=source_hash,
+        verbatim_text=verbatim_text,
+        anchor=anchor,
+        span_hash=span_hash,
+        polygon=json.loads(polygon) if polygon else None,
+        marked_at=marked_at or "",
+        status=ReferenceStatus(status),
+    )

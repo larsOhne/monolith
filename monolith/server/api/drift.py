@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
 
-from monolith.mcp import tools as T
-from monolith.server.deps import get_db
-from monolith.store.db import DB
+from fastapi import APIRouter, Depends
+
+from monolith.core import drift as drift_mod
+from monolith.server.deps import get_vault_root
 
 router = APIRouter()
 
 
-@router.get("/{project_slug}")
-def check_drift(project_slug: str, db: DB = Depends(get_db)):
-    """Run drift detection for all evidence in *project_slug*."""
-    try:
-        return T.check_drift(db, project_slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+@router.get("")
+def check_drift(vault_root: Path = Depends(get_vault_root)):
+    """Run drift detection for all references in the vault."""
+    report = drift_mod.check_drift(vault_root)
+    return {
+        "has_issues": report.has_issues,
+        "entries": [
+            {
+                "reference_id": e.reference_id,
+                "source_path": e.source_path,
+                "status": e.status.value,
+                "diff_snippet": e.diff_snippet,
+            }
+            for e in report.entries
+        ],
+    }
