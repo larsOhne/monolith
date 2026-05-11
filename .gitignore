@@ -1,4 +1,17 @@
-# Byte-compiled / optimized / DLL files
+# ── Rust / Tauri ──────────────────────────────────────────────────────────────
+desktop/src-tauri/target/
+desktop/target/
+
+# ── Node / Vite ───────────────────────────────────────────────────────────────
+desktop/node_modules/
+desktop/dist/
+node_modules/
+dist/
+
+# ── Tauri generated ───────────────────────────────────────────────────────────
+desktop/src-tauri/gen/
+
+# ── Byte-compiled / optimized / DLL files ─────────────────────────────────────
 __pycache__/
 *.py[codz]
 *$py.class

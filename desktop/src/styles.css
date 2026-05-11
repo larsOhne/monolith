@@ -1,0 +1,121 @@
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --bg:        #1a1a1a;
+  --surface:   #252525;
+  --surface2:  #2e2e2e;
+  --border:    #383838;
+  --fg:        #e0e0e0;
+  --muted:     #888;
+  --accent:    #7c6af0;
+  --accent-dim:#5548c0;
+  --danger:    #e05555;
+  --green:     #4caf7d;
+  --orange:    #e0943c;
+  --radius:    6px;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root { display: flex; height: 100vh; }
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── Common elements ───────────────────────────────────────────────────────── */
+button {
+  background: var(--surface2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+button:hover { background: var(--border); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.primary:hover { background: var(--accent-dim); }
+button.danger { border-color: var(--danger); color: var(--danger); }
+button.danger:hover { background: var(--danger); color: #fff; }
+
+input, textarea {
+  background: var(--surface2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+}
+input:focus, textarea:focus { border-color: var(--accent); }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+pre {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  overflow-x: auto;
+}
+
+/* ── Modal overlay ─────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  min-width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.modal h2 { font-size: 16px; font-weight: 600; }
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}

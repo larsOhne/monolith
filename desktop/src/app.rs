@@ -9,6 +9,7 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::vault::Vault;
+use crate::vault_registry::VaultRegistry;
 
 // ─── Obsidian palette ───────────────────────────────────────────────────────
 
@@ -50,12 +51,6 @@ struct ConfirmDeleteDialog {
     target: Option<PathBuf>,
 }
 
-#[derive(Default)]
-struct OpenVaultDialog {
-    open: bool,
-    path: String,
-    error: Option<String>,
-}
 
 #[derive(Default)]
 struct QuickSwitcherState {
@@ -63,6 +58,66 @@ struct QuickSwitcherState {
     query: String,
     results: Vec<PathBuf>,
     selected_idx: usize,
+}
+
+/// Clickable directory/file browser dialog.
+struct FileBrowser {
+    open: bool,
+    current_dir: PathBuf,
+    entries: Vec<(String, PathBuf, bool)>,
+    selected: Option<PathBuf>,
+    folder_mode: bool,
+}
+
+impl Default for FileBrowser {
+    fn default() -> Self {
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+        let mut b = FileBrowser { open: false, current_dir: home, entries: Vec::new(), selected: None, folder_mode: true };
+        b.refresh();
+        b
+    }
+}
+
+impl FileBrowser {
+    fn open_at(&mut self, dir: PathBuf, folder_mode: bool) {
+        self.folder_mode = folder_mode;
+        self.current_dir = dir;
+        self.selected = None;
+        self.open = true;
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        self.entries.clear();
+        let Ok(rd) = std::fs::read_dir(&self.current_dir) else { return };
+        let mut entries: Vec<(String, PathBuf, bool)> = rd
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                let name = p.file_name()?.to_string_lossy().into_owned();
+                if name.starts_with('.') { return None; }
+                let is_dir = p.is_dir();
+                if !self.folder_mode && !is_dir && !is_source_file(&p) { return None; }
+                Some((name, p, is_dir))
+            })
+            .collect();
+        entries.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        self.entries = entries;
+    }
+
+    fn navigate(&mut self, dir: PathBuf) {
+        self.current_dir = dir;
+        self.selected = None;
+        self.refresh();
+    }
+
+    fn go_up(&mut self) {
+        if let Some(p) = self.current_dir.parent() { self.navigate(p.to_path_buf()); }
+    }
+}
+
+fn is_source_file(p: &std::path::Path) -> bool {
+    matches!(p.extension().and_then(|e| e.to_str()), Some("pdf" | "md" | "txt" | "html" | "htm"))
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -85,7 +140,11 @@ pub struct MonolithApp {
     new_item_dialog: NewItemDialog,
     rename_dialog: RenameDialog,
     delete_dialog: ConfirmDeleteDialog,
-    open_vault_dialog: OpenVaultDialog,
+    registry: VaultRegistry,
+    vault_manager_open: bool,
+    browser: FileBrowser,
+    /// Set by show_path_picker(File mode) — consumed by sources view
+    on_file_picked: Option<PathBuf>,
     search_query: String,
     search_results: Vec<PathBuf>,
     search_mode: bool,
@@ -110,7 +169,10 @@ impl MonolithApp {
             new_item_dialog: NewItemDialog::default(),
             rename_dialog: RenameDialog::default(),
             delete_dialog: ConfirmDeleteDialog::default(),
-            open_vault_dialog: OpenVaultDialog::default(),
+            registry: VaultRegistry::load(),
+            vault_manager_open: false,
+            browser: FileBrowser::default(),
+            on_file_picked: None,
             search_query: String::new(),
             search_results: Vec::new(),
             search_mode: false,
@@ -200,36 +262,28 @@ impl MonolithApp {
         self.status_message = Some((msg, std::time::Instant::now()));
     }
 
-    fn open_vault_dialog(&mut self) {
+    /// Open the inline path picker to choose a vault folder.
+    fn pick_and_open_vault(&mut self) {
         self.autosave();
-        // Pre-fill with current vault root or home dir
-        let initial = self
-            .vault
-            .as_ref()
-            .map(|v| v.root.display().to_string())
-            .or_else(|| std::env::var("HOME").ok())
-            .unwrap_or_default();
-        self.open_vault_dialog = OpenVaultDialog {
-            open: true,
-            path: initial,
-            error: None,
-        };
+        let start = self.vault.as_ref()
+            .map(|v| v.root.clone())
+            .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
+        self.browser.open_at(start, true);
     }
 
-    fn do_open_vault(&mut self, path: String) {
-        let dir = std::path::PathBuf::from(&path);
-        if !dir.is_dir() {
-            self.open_vault_dialog.error = Some(format!("{path} is not a directory"));
+    /// Switch the active vault to `path` without opening a file picker.
+    fn switch_vault(&mut self, path: PathBuf) {
+        if !path.is_dir() {
+            self.set_status(format!("Not a directory: {}", path.display()));
             return;
         }
-        let vault = Vault::open(dir.clone());
+        let vault = Vault::open(path.clone());
         self.vault = Some(vault);
         self.expanded_dirs.clear();
         self.selected_file = None;
         self.editor_content = String::new();
         self.is_dirty = false;
-        self.open_vault_dialog.open = false;
-        self.set_status(format!("Opened vault: {}", dir.display()));
+        self.set_status(format!("Opened vault: {}", path.display()));
     }
 
     fn search_vault(&mut self) {
@@ -525,15 +579,31 @@ impl MonolithApp {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new("Open Vault")
+                                        egui::RichText::new("Vaults…")
                                             .color(palette::MUTED)
                                             .size(13.0),
                                     )
                                     .frame(false),
                                 )
+                                .on_hover_text("Manage registered vaults")
                                 .clicked()
                             {
-                                self.open_vault_dialog();
+                                self.vault_manager_open = true;
+                            }
+
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Open…")
+                                            .color(palette::MUTED)
+                                            .size(13.0),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Open a vault folder")
+                                .clicked()
+                            {
+                                self.pick_and_open_vault();
                             }
                         },
                     );
@@ -791,7 +861,7 @@ impl MonolithApp {
                                 );
                                 ui.add_space(12.0);
                                 if ui.button("Open Folder…").clicked() {
-                                    self.open_vault_dialog();
+                                    self.pick_and_open_vault();
                                 }
                             });
                         }
@@ -1303,56 +1373,255 @@ impl MonolithApp {
         }
     }
 
-    fn show_open_vault_dialog(&mut self, ctx: &egui::Context) {
-        if !self.open_vault_dialog.open {
+    fn show_vault_manager(&mut self, ctx: &egui::Context) {
+        if !self.vault_manager_open {
             return;
         }
-        let mut open = true;
-        let mut do_open: Option<String> = None;
 
-        egui::Window::new("Open Vault")
+        // Escape closes
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.vault_manager_open = false;
+            return;
+        }
+
+        let mut open = true;
+        let mut switch_to: Option<std::path::PathBuf> = None;
+        let mut remove_path: Option<std::path::PathBuf> = None;
+        let mut add_new = false;
+
+        egui::Window::new("Vaults")
             .collapsible(false)
-            .resizable(false)
-            .min_width(420.0)
+            .resizable(true)
+            .min_width(480.0)
+            .min_height(200.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label("Folder path:");
-                ui.add_space(4.0);
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.open_vault_dialog.path)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("/home/user/my-vault"),
-                );
-                resp.request_focus();
+                let active_root = self.vault.as_ref().map(|v| v.root.clone());
 
-                if let Some(ref err) = self.open_vault_dialog.error.clone() {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(err).color(egui::Color32::RED).size(12.0));
+                if self.registry.vaults.is_empty() {
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("No vaults registered yet.")
+                                .color(palette::MUTED)
+                                .size(13.0),
+                        );
+                    });
+                    ui.add_space(24.0);
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            let vaults: Vec<_> = self.registry.vaults.clone();
+                            for record in &vaults {
+                                let is_active = active_root.as_deref() == Some(record.path.as_path());
+
+                                let row_fill = if is_active { palette::ACTIVE_FILE } else { palette::SURFACE };
+                                egui::Frame::new()
+                                    .fill(row_fill)
+                                    .stroke(egui::Stroke::new(1.0, if is_active { palette::ACCENT } else { palette::BORDER }))
+                                    .inner_margin(egui::Margin::symmetric(10, 7))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            // Name + path column
+                                            ui.vertical(|ui| {
+                                                ui.set_min_width(320.0);
+                                                ui.label(
+                                                    egui::RichText::new(&record.name)
+                                                        .color(if is_active { palette::ACCENT } else { palette::FG })
+                                                        .size(14.0)
+                                                        .strong(),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(record.path.display().to_string())
+                                                        .color(palette::MUTED)
+                                                        .size(11.0),
+                                                );
+                                            });
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                // Remove button
+                                                if ui.add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("✕").color(palette::MUTED).size(12.0),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text("Remove from list")
+                                                .clicked()
+                                                {
+                                                    remove_path = Some(record.path.clone());
+                                                }
+
+                                                // Open button (only if not already active)
+                                                if !is_active {
+                                                    if ui.add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new("Open").color(palette::ACCENT).size(12.0),
+                                                        )
+                                                        .fill(palette::CANVAS),
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        switch_to = Some(record.path.clone());
+                                                    }
+                                                } else {
+                                                    ui.label(
+                                                        egui::RichText::new("● active")
+                                                            .color(palette::GREEN)
+                                                            .size(11.0),
+                                                    );
+                                                }
+                                            });
+                                        });
+                                    });
+
+                                ui.add_space(4.0);
+                            }
+                        });
                 }
 
-                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let can = !self.open_vault_dialog.path.trim().is_empty();
-                    if ui.add_enabled(can, egui::Button::new("Open")).clicked()
-                        || (can && ctx.input(|i| i.key_pressed(egui::Key::Enter)))
-                    {
-                        do_open = Some(self.open_vault_dialog.path.trim().to_string());
+                    if ui.button(egui::RichText::new("+ Add Vault…").color(palette::GREEN)).clicked() {
+                        add_new = true;
                     }
-                    if ui.button("Cancel").clicked() {
-                        self.open_vault_dialog.open = false;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            self.vault_manager_open = false;
+                        }
+                    });
                 });
             });
 
         if !open {
-            self.open_vault_dialog.open = false;
+            self.vault_manager_open = false;
         }
 
-        if let Some(path) = do_open {
-            self.do_open_vault(path);
+        if let Some(rp) = remove_path {
+            let is_active = self.vault.as_ref().map(|v| v.root == rp).unwrap_or(false);
+            self.registry.remove(&rp);
+            if is_active {
+                self.vault = None;
+                self.selected_file = None;
+                self.editor_content = String::new();
+                self.is_dirty = false;
+            }
+        }
+
+        if let Some(p) = switch_to {
+            self.vault_manager_open = false;
+            self.switch_vault(p);
+        }
+
+        if add_new {
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+            self.browser.open_at(home, true);
         }
     }
+
+    fn show_file_browser(&mut self, ctx: &egui::Context) {
+        if !self.browser.open { return; }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { self.browser.open = false; return; }
+
+        let title = if self.browser.folder_mode { "Open Folder" } else { "Open File" };
+        let mut open = true;
+        let mut confirmed: Option<PathBuf> = None;
+        let mut navigate_to: Option<PathBuf> = None;
+        let mut go_up = false;
+        let mut go_home = false;
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(true)
+            .min_width(520.0)
+            .min_height(320.0)
+            .max_height(600.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                // Toolbar
+                ui.horizontal(|ui| {
+                    if ui.button("⬆  Up").clicked() { go_up = true; }
+                    if ui.button("⌂  Home").clicked() { go_home = true; }
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(self.browser.current_dir.display().to_string())
+                            .color(palette::MUTED).size(11.0).monospace(),
+                    );
+                });
+                ui.separator();
+
+                // Listing
+                let entries: Vec<_> = self.browser.entries.clone();
+                egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    for (name, path, is_dir) in &entries {
+                        let icon = if *is_dir { "📁 " } else { "📄 " };
+                        let is_sel = self.browser.selected.as_deref() == Some(path.as_path());
+                        let color = if is_sel { palette::ACCENT } else if *is_dir { palette::FG } else { palette::MUTED };
+                        let fill = if is_sel { palette::ACTIVE_FILE } else { egui::Color32::TRANSPARENT };
+                        let resp = ui.add(
+                            egui::Button::new(egui::RichText::new(format!("{icon}{name}")).color(color).size(13.0))
+                                .fill(fill)
+                                .frame(false)
+                                .min_size(egui::vec2(ui.available_width(), 22.0)),
+                        );
+                        if *is_dir {
+                            if resp.double_clicked() { navigate_to = Some(path.clone()); }
+                            else if resp.clicked() {
+                                if self.browser.folder_mode { self.browser.selected = Some(path.clone()); }
+                                else { navigate_to = Some(path.clone()); }
+                            }
+                        } else {
+                            if resp.clicked() { self.browser.selected = Some(path.clone()); }
+                            if resp.double_clicked() { confirmed = Some(path.clone()); }
+                        }
+                    }
+                });
+                ui.separator();
+
+                // Footer
+                let confirm_target = self.browser.selected.clone()
+                    .unwrap_or_else(|| self.browser.current_dir.clone());
+                ui.label(
+                    egui::RichText::new(confirm_target.display().to_string())
+                        .color(palette::MUTED).size(11.0).monospace(),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let btn_label = if self.browser.folder_mode { "Open Folder" } else { "Open File" };
+                    let can = if self.browser.folder_mode { true }
+                              else { self.browser.selected.as_ref().map(|p| p.is_file()).unwrap_or(false) };
+                    if ui.add_enabled(can, egui::Button::new(btn_label)).clicked() {
+                        confirmed = Some(confirm_target);
+                    }
+                    if ui.button("Cancel").clicked() { self.browser.open = false; }
+                });
+            });
+
+        if !open { self.browser.open = false; }
+        if go_up { self.browser.go_up(); }
+        if go_home {
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+            self.browser.navigate(home);
+        }
+        if let Some(dir) = navigate_to { self.browser.navigate(dir); }
+
+        if let Some(path) = confirmed {
+            self.browser.open = false;
+            if self.browser.folder_mode {
+                self.registry.add(path.clone());
+                self.switch_vault(path);
+            } else {
+                self.on_file_picked = Some(path);
+            }
+        }
+    }
+
 }
 
 // ─── eframe::App impl ───────────────────────────────────────────────────────
@@ -1398,7 +1667,8 @@ impl eframe::App for MonolithApp {
         self.show_new_item_dialog(&ctx);
         self.show_rename_dialog(&ctx);
         self.show_delete_dialog(&ctx);
-        self.show_open_vault_dialog(&ctx);
+        self.show_vault_manager(&ctx);
+        self.show_file_browser(&ctx);
         self.show_quick_switcher(&ctx);
     }
 

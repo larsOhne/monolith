@@ -1,20 +1,32 @@
 #!/usr/bin/env bash
+# Run the Monolith desktop (Tauri + React).
+# The Python backend is spawned automatically by the Tauri app at startup;
+# this script just builds (if needed) and launches the app.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DESKTOP="$SCRIPT_DIR/desktop"
 
 # Rust toolchain
-source "$HOME/.cargo/env"
+source "$HOME/.cargo/env" 2>/dev/null || true
 
-# Python venv
+# Python venv (needed so the backend subprocess can find 'monolith-server')
 source "$SCRIPT_DIR/.venv/bin/activate"
 
-# Start Python backend in background; capture PID for cleanup
-monolith-server --host 127.0.0.1 &
-BACKEND_PID=$!
-trap 'kill "$BACKEND_PID" 2>/dev/null' EXIT
+cd "$DESKTOP"
 
-echo "Backend PID: $BACKEND_PID"
-
-# Launch desktop (blocks until window is closed)
-"$SCRIPT_DIR/desktop/target/debug/monolith-desktop"
+if [[ "${1:-}" == "--dev" ]]; then
+  # Dev mode: hot-reloading Vite + Tauri
+  cargo tauri dev
+elif [[ "${1:-}" == "--build" ]]; then
+  # Production build
+  cargo tauri build
+else
+  # Default: run the already-built debug binary directly
+  BINARY="$DESKTOP/src-tauri/target/debug/monolith-desktop"
+  if [[ ! -f "$BINARY" ]]; then
+    echo "Binary not found — building first (this takes a while)…"
+    cargo tauri build --debug
+  fi
+  exec "$BINARY"
+fi
